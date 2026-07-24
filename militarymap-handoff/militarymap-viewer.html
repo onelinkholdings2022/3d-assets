@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MilitaryMap — glTF viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d0e10; overflow: hidden; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+  #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    font: 11px "SF Mono", ui-monospace, Menlo, monospace; color: rgba(216,221,217,0.4);
+    letter-spacing: 0.12em; text-transform: uppercase; }
+  /* "Globe Shadow: Yes" — the component's gShade radial overlay, screen-space */
+  #shade { position: fixed; border-radius: 50%; pointer-events: none;
+    background: radial-gradient(circle at 38% 32%,
+      rgba(255,255,255,0.12) 0%, rgba(255,255,255,0) 55%,
+      rgba(0,0,0,0.32) 92%, rgba(0,0,0,0.55) 100%); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="shade"></div>
+<div id="loading">Loading globe data…</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://esm.sh/three@0.160.1",
+  "three/examples/jsm/": "https://esm.sh/three@0.160.1/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from "three"
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js"
+
+// ---- hard config (mirrors the Framer property panel) ----
+const CFG = {
+  glb: "militarymap.glb",
+  autoRotate: true,
+  rotateSpeed: 5,        // deg/s around the polar axis
+  defaultView: { lng: 104, lat: 35 },  // Asia
+  enableDrag: true,
+  dragSens: 0.4,         // deg per px, same as the component
+  maxLat: 85,
+  idleMs: 1200,          // resume auto-rotate this long after drag ends
+  background: null,      // transparent over the page bg (Framer default)
+}
+
+const mount = document.getElementById("app")
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+renderer.outputColorSpace = THREE.SRGBColorSpace
+mount.appendChild(renderer.domElement)
+
+const scene = new THREE.Scene()
+if (CFG.background !== null) scene.background = new THREE.Color(CFG.background)
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100)
+camera.position.set(0, 0, 3.4)
+
+// No lights: the GLB uses unlit materials (exact SVG colors everywhere);
+// the Globe Shadow look comes from the #shade overlay div instead.
+
+// rotation state in "map space": which lng/lat faces the camera.
+// rotation.y spins the polar axis (lambda), rotation.x tilts (phi) —
+// Euler XYZ applies Y first, so the spin stays around the true polar axis.
+const rot = { lng: CFG.defaultView.lng, lat: CFG.defaultView.lat }
+const globe = new THREE.Group()
+scene.add(globe)
+function applyRotation() {
+  globe.rotation.y = -(rot.lng + 90) * Math.PI / 180
+  globe.rotation.x = rot.lat * Math.PI / 180
+}
+applyRotation()
+
+new GLTFLoader().load(CFG.glb, (gltf) => {
+  globe.add(gltf.scene)
+  document.getElementById("loading").remove()
+  tick() // start rendering only once the model is in
+}, undefined, (err) => {
+  document.getElementById("loading").textContent = "Failed to load militarymap.glb (serve over http, not file://)"
+  console.error(err)
+})
+
+// drag to rotate — direct 1:1 like the component (no inertia)
+const drag = { active: false, lastX: 0, lastY: 0 }
+let lastInteract = -1e9
+const el = renderer.domElement
+el.style.cursor = CFG.enableDrag ? "grab" : "default"
+el.style.touchAction = "none"
+if (CFG.enableDrag) {
+  el.addEventListener("pointerdown", (e) => {
+    drag.active = true
+    drag.lastX = e.clientX; drag.lastY = e.clientY
+    el.setPointerCapture(e.pointerId)
+    el.style.cursor = "grabbing"
+  })
+  el.addEventListener("pointermove", (e) => {
+    if (!drag.active) return
+    const dx = e.clientX - drag.lastX, dy = e.clientY - drag.lastY
+    drag.lastX = e.clientX; drag.lastY = e.clientY
+    rot.lng -= dx * CFG.dragSens           // drag right → map follows cursor
+    rot.lat = Math.max(-CFG.maxLat, Math.min(CFG.maxLat, rot.lat + dy * CFG.dragSens))
+  })
+  const up = () => {
+    if (!drag.active) return
+    drag.active = false
+    lastInteract = performance.now()
+    el.style.cursor = "grab"
+  }
+  el.addEventListener("pointerup", up)
+  el.addEventListener("pointercancel", up)
+}
+
+const shade = document.getElementById("shade")
+function resize() {
+  const w = mount.clientWidth || 700, h = mount.clientHeight || 500
+  renderer.setSize(w, h, false)
+  renderer.domElement.style.width = "100%"; renderer.domElement.style.height = "100%"
+  camera.aspect = w / h; camera.updateProjectionMatrix()
+  // fit the shade disc to the globe's projected silhouette (R=1 at dist 3.4)
+  const r = (1 / (3.4 * Math.tan(camera.fov * Math.PI / 360))) * (h / 2)
+  shade.style.width = shade.style.height = (r * 2) + "px"
+  shade.style.left = (w / 2 - r) + "px"
+  shade.style.top = (h / 2 - r) + "px"
+}
+resize()
+new ResizeObserver(resize).observe(mount)
+
+const clock = new THREE.Clock()
+function tick() {
+  requestAnimationFrame(tick)
+  const dt = Math.min(clock.getDelta(), 0.05)
+  if (CFG.autoRotate && !drag.active && performance.now() - lastInteract > CFG.idleMs) {
+    rot.lng += CFG.rotateSpeed * dt
+  }
+  applyRotation()
+  renderer.render(scene, camera)
+}
+</script>
+</body>
+</html>
